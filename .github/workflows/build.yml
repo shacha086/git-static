@@ -1,0 +1,101 @@
+name: Build Git Static Binaries
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, i386, arm, arm64, mipsel, mips64el]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap qemu-user-static
+
+      - name: Bootstrap chroot environment
+        run: |
+          echo "Creating chroot environment for ${{ matrix.arch }}..."
+          sudo ./bootstrap.sh ${{ matrix.arch }} chroot-${{ matrix.arch }}
+
+      - name: Verify chroot environment
+        run: |
+          if [ ! -d "chroot-${{ matrix.arch }}/root" ]; then
+            echo "Error: Chroot root directory not found"
+            exit 1
+          fi
+          if [ ! -f "chroot-${{ matrix.arch }}/etc/debian_version" ]; then
+            echo "Error: Debian system not properly bootstrapped"
+            exit 1
+          fi
+          if [ ! -d "chroot-${{ matrix.arch }}/usr/bin" ]; then
+            echo "Error: Essential system directories missing"
+            exit 1
+          fi
+          echo "Chroot environment verified successfully"
+
+      - name: Copy build script
+        run: |
+          sudo cp build_git.sh chroot-${{ matrix.arch }}/root/
+          sudo chmod 755 chroot-${{ matrix.arch }}/root/build_git.sh
+
+      - name: Build Git in chroot
+        run: |
+          echo "Starting Git compilation for ${{ matrix.arch }}..."
+          echo "This may take 30-60 minutes depending on the architecture"
+          sudo chroot chroot-${{ matrix.arch }} /bin/bash -c \
+            "cd /root && ./build_git.sh"
+          echo "Git compilation completed"
+
+      - name: Copy output from chroot
+        run: |
+          sudo cp -r chroot-${{ matrix.arch }}/root/output \
+            output-${{ matrix.arch }}
+          sudo chown -R $(id -u):$(id -g) output-${{ matrix.arch }}
+
+      - name: Package binaries
+        run: |
+          if [ ! -f "output-${{ matrix.arch }}/bin/git" ]; then
+            echo "Error: Git binary not found in output!"
+            ls -la output-${{ matrix.arch }}/bin/ || echo "bin directory not found"
+            exit 1
+          fi
+          echo "Git binary found, checking version..."
+          file output-${{ matrix.arch }}/bin/git
+          echo "Creating archive..."
+          cd output-${{ matrix.arch }}
+          tar -czf ../git-static-${{ matrix.arch }}.tar.gz .
+          cd ..
+          ls -lh git-static-${{ matrix.arch }}.tar.gz
+          echo "Package created successfully"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-static-${{ matrix.arch }}
+          path: git-static-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+      - name: Cleanup chroot environment
+        if: always()
+        run: |
+          sudo rm -rf chroot-${{ matrix.arch }} output-${{ matrix.arch }}
