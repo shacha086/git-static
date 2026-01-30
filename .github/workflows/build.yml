@@ -2,58 +2,72 @@ name: Build Git Static Binaries
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, i386, arm, arm64, mipsel, mips64el]
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-    
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
-      with:
-        platforms: all
-    
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y debootstrap qemu-user-static binfmt-support
-    
-    - name: Bootstrap chroot environment
-      run: |
-        sudo ./bootstrap.sh ${{ matrix.arch }} chroot-${{ matrix.arch }}
-    
-    - name: Copy build script
-      run: |
-        sudo cp build_git.sh chroot-${{ matrix.arch }}/root/
-        sudo chmod 755 chroot-${{ matrix.arch }}/root/build_git.sh
-    
-    - name: Build Git in chroot
-      run: |
-        sudo chroot chroot-${{ matrix.arch }} /bin/bash -c "cd /root && ./build_git.sh"
-    
-    - name: Copy output from chroot
-      run: |
-        sudo cp -r chroot-${{ matrix.arch }}/root/output output-${{ matrix.arch }}
-        sudo chown -R $(id -u):$(id -g) output-${{ matrix.arch }}
-    
-    - name: Package binaries
-      run: |
-        cd output-${{ matrix.arch }}
-        tar -czf ../git-static-${{ matrix.arch }}.tar.gz .
-    
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: git-static-${{ matrix.arch }}
-        path: git-static-${{ matrix.arch }}.tar.gz
-        retention-days: 30
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap
+
+      - name: Bootstrap chroot environment
+        run: |
+          sudo ./bootstrap.sh ${{ matrix.arch }} chroot-${{ matrix.arch }}
+
+      - name: Copy build script
+        run: |
+          sudo cp build_git.sh chroot-${{ matrix.arch }}/root/
+          sudo chmod 755 chroot-${{ matrix.arch }}/root/build_git.sh
+
+      - name: Build Git in chroot
+        run: |
+          sudo chroot chroot-${{ matrix.arch }} /bin/bash -c \
+            "cd /root && ./build_git.sh"
+
+      - name: Copy output from chroot
+        run: |
+          sudo cp -r chroot-${{ matrix.arch }}/root/output \
+            output-${{ matrix.arch }}
+          sudo chown -R $(id -u):$(id -g) output-${{ matrix.arch }}
+
+      - name: Package binaries
+        run: |
+          if [ ! -f "output-${{ matrix.arch }}/bin/git" ]; then
+            echo "Error: Git binary not found in output!"
+            exit 1
+          fi
+          cd output-${{ matrix.arch }}
+          tar -czf ../git-static-${{ matrix.arch }}.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-static-${{ matrix.arch }}
+          path: git-static-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+      - name: Cleanup chroot environment
+        if: always()
+        run: |
+          sudo rm -rf chroot-${{ matrix.arch }} output-${{ matrix.arch }}
